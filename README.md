@@ -4,11 +4,13 @@
 
 ![MALCIP control bar](preview-bar.png)
 ![MALCIP fluid popup](preview-fluid.png)
+![MALCIP globe popup](preview-globe.png)
 
 The top center control bar uses 50 px cells, 5 px gaps, and a gliding selection frame inspired by Workspace Field. Its icons are drawn as geometry rather than emoji. Popups are transparent, click-through, and arranged in a stack at the side of the primary monitor. Closing one moves the others into place.
 
 - **Fluid** is a particle/grid FLIP simulation rendered as a continuous water surface at physical display resolution. The pointer acts as a small solid object when it enters the water. A volume correction prevents the particle pool from gradually collapsing onto the floor. Ordered dither is limited to the surface edge.
 - **System** shows live CPU, memory, and root disk usage.
+- **Globe** is an automatically rotating, dithered orthographic Earth with a translucent ocean, lit land, and geographic grid. It uses Natural Earth 110m land polygons and requires no interaction.
 
 ## Install
 
@@ -37,7 +39,7 @@ While the bar is open:
 | --- | --- |
 | Arrow keys or A/D | Move the gliding selection frame |
 | Enter or E | Activate the selected cell |
-| 1/F, 2/S | Toggle Fluid or System directly |
+| 1/F, 2/S, 3/G | Toggle Fluid, System, or Globe directly |
 | Shift+Enter | Open config |
 | R | Reset fluid |
 | H | Toggle surface dither |
@@ -55,6 +57,6 @@ The overlay windows request XWayland's skip-taskbar and skip-pager states, so KD
 
 ## Current scope
 
-This is an early FLIP-focused MALCIP release. A globe and other desktop effects are planned after the fluid behavior is confirmed. At 4,000 particles and 1.5× display scaling, a local 90-frame measurement found a 12.4 ms median and 19.9 ms 95th-percentile simulation plus rendering time while the pointer intersected the water. Qt painting and compositor latency add to that.
+This is an early MALCIP release. At 4,000 particles and 1.5× display scaling, a local 90-frame measurement found a 12.4 ms median and 19.9 ms 95th-percentile FLIP simulation plus rendering time while the pointer intersected the water. The globe renderer measured 8.9 ms median per frame at 336 × 336 physical pixels. Qt painting and compositor latency add to those times.
 
-MIT licensed. See [LICENSE](LICENSE).
+MIT licensed. See [LICENSE](LICENSE). Natural Earth globe data is public domain; see [DATA_LICENSE.md](DATA_LICENSE.md).

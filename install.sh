@@ -7,7 +7,7 @@ app_dir=$data_home/malcip
 desktop_dir=$data_home/applications
 mkdir -p "$app_dir" "$desktop_dir"
 install -m 755 "$source_dir/malcip.py" "$source_dir/run.sh" "$app_dir"
-install -m 644 "$source_dir/README.md" "$app_dir/README.md"
+install -m 644 "$source_dir/README.md" "$source_dir/land-110m.geojson" "$source_dir/DATA_LICENSE.md" "$app_dir"
 python3 - "$source_dir/malcip.desktop.in" "$desktop_dir/malcip.desktop" "$app_dir/run.sh" <<'PY'
 from pathlib import Path
 import sys

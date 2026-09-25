@@ -13,8 +13,8 @@ import time
 
 import numpy as np
 import psutil
-from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRect, QRectF, QPropertyAnimation, Qt, QTimer
-from PyQt6.QtGui import QColor, QCursor, QFont, QImage, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QPropertyAnimation, Qt, QTimer
+from PyQt6.QtGui import QColor, QCursor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QLabel, QPushButton,
@@ -445,6 +445,113 @@ class SystemPopup(Chrome):
         p.drawText(10, 137, "LIVE TELEMETRY")
 
 
+class GlobeRenderer:
+    """Software-rendered orthographic Earth using Natural Earth land polygons."""
+
+    def __init__(self):
+        data = json.loads(Path(__file__).with_name("land-110m.geojson").read_text())
+        width, height = 720, 360
+        mask = QImage(width, height, QImage.Format.Format_Grayscale8)
+        mask.fill(0)
+        painter = QPainter(mask)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(Qt.GlobalColor.white)
+        for feature in data["features"]:
+            path = QPainterPath()
+            path.setFillRule(Qt.FillRule.OddEvenFill)
+            for ring in feature["geometry"]["coordinates"]:
+                polygon = QPolygonF([QPointF((lon+180)*2, (90-lat)*2)
+                                     for lon, lat in ring])
+                path.addPolygon(polygon)
+            painter.drawPath(path)
+        painter.end()
+        self.land = np.frombuffer(mask.bits().asstring(mask.bytesPerLine()*height),
+                                  dtype=np.uint8).reshape(height, mask.bytesPerLine())[:, :width].copy()
+
+    def image(self, angle: float, out_size: tuple[int, int]) -> QImage:
+        width, height = out_size
+        xx = (np.arange(width, dtype=np.float32)+0.5-width/2)/(width/2)
+        yy = -(np.arange(height, dtype=np.float32)+0.5-height/2)/(height/2)
+        x, y = np.broadcast_arrays(xx[None, :], yy[:, None])
+        radius2 = x*x+y*y
+        z = np.sqrt(np.clip(1-radius2, 0, 1))
+        tilt = math.radians(23.4)
+        world_y = y*math.cos(tilt)+z*math.sin(tilt)
+        world_z = z*math.cos(tilt)-y*math.sin(tilt)
+        latitude = np.arcsin(np.clip(world_y, -1, 1))
+        longitude = (np.arctan2(x, world_z)+angle+math.pi)%(2*math.pi)-math.pi
+        ix = ((longitude+math.pi)/(2*math.pi)*self.land.shape[1]).astype(np.int32) % self.land.shape[1]
+        iy = np.clip(((math.pi/2-latitude)/math.pi*self.land.shape[0]).astype(np.int32),
+                     0, self.land.shape[0]-1)
+        land = self.land[iy, ix] > 127
+        coast = land & (~np.roll(land, 1, 0) | ~np.roll(land, -1, 0)
+                        | ~np.roll(land, 1, 1) | ~np.roll(land, -1, 1))
+        light = np.clip(0.28 + 0.72*(0.28*x+0.25*y+0.88*z), 0.16, 1.0)
+        bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6],
+                          [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.float32)/16
+        by, bx = np.indices((height, width))
+        shade = light*(0.91 + 0.09*(bayer[by%4, bx%4] < light))
+        grid_lon = np.abs((np.degrees(longitude)+15)%30-15) < 0.55
+        grid_lat = np.abs((np.degrees(latitude)+15)%30-15) < 0.55
+        graticule = (grid_lon | grid_lat) & (radius2 < 1)
+        rgb = np.empty((height, width, 4), dtype=np.uint8)
+        for channel, (ocean, earth) in enumerate(((15, 92), (89, 192), (85, 122))):
+            value = np.where(land, earth, ocean)*shade
+            value += coast*40 + graticule*18
+            rgb[:, :, channel] = np.clip(value, 0, 255).astype(np.uint8)
+        coverage = np.clip((1-np.sqrt(radius2))*min(width, height)/2, 0, 1)
+        rgb[:, :, 3] = (coverage*232).astype(np.uint8)
+        rgb = np.ascontiguousarray(rgb)
+        return QImage(rgb.data, width, height, rgb.strides[0],
+                      QImage.Format.Format_RGBA8888).copy()
+
+
+class GlobePopup(Chrome):
+    def __init__(self):
+        super().__init__(260, 291, pass_through=True)
+        self.renderer = GlobeRenderer()
+        self.started = time.monotonic()
+        self.frame = self.renderer.image(0, self.render_size())
+        self.timer = QTimer(self)
+        self.timer.setInterval(33)
+        self.timer.timeout.connect(self.advance)
+
+    def render_size(self):
+        side = round(224*self.devicePixelRatioF())
+        return (side, side)
+
+    def showEvent(self, event):
+        self.timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
+
+    def advance(self):
+        self.frame = self.renderer.image((time.monotonic()-self.started)*0.22,
+                                         self.render_size())
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(ACCENT)
+        painter.setFont(QFont("monospace", 9, QFont.Weight.Bold))
+        painter.drawText(10, 22, "GLOBE / EARTH")
+        painter.setPen(QColor("#679979"))
+        painter.setFont(QFont("monospace", 7))
+        painter.drawText(196, 21, "23.4 DEG")
+        rect = QRect(18, 40, 224, 224)
+        painter.setPen(QPen(QColor(87, 180, 124, 70), 1))
+        painter.drawEllipse(rect.adjusted(-2, -2, 2, 2))
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.drawImage(rect, self.frame)
+        painter.setPen(QColor("#6fae84"))
+        painter.drawText(10, 281, "NATURAL EARTH / 110M")
+
+
 class ConfigDialog(QDialog):
     def __init__(self, values, changed, parent=None):
         super().__init__(parent)
@@ -488,7 +595,7 @@ class ConfigDialog(QDialog):
 
 class ControlBar(Chrome):
     def __init__(self, owner):
-        super().__init__(310, 91)
+        super().__init__(365, 91)
         self.owner = owner
         self.hover_cell = -1
         self.setMouseTracking(True)
@@ -517,6 +624,7 @@ class ControlBar(Chrome):
         p.drawText(16, 79, "SHIFT+ENTER")
         for i, (label, active) in enumerate((("FLUID", self.owner.fluid.isVisible()),
                                              ("SYSTEM", self.owner.system.isVisible()),
+                                             ("GLOBE", self.owner.globe.isVisible()),
                                              ("CONFIG", False))):
             cell = self.cell(i)
             p.setBrush(QColor("#408f61" if active else "#002f18"))
@@ -535,6 +643,10 @@ class ControlBar(Chrome):
             elif i == 1:
                 for j, height in enumerate((7, 13, 10)):
                     p.drawRect(cx-10+j*7, 60-height, 4, height)
+            elif i == 2:
+                p.drawEllipse(QRectF(cx-10, 42, 20, 20))
+                p.drawEllipse(QRectF(cx-5, 42, 10, 20))
+                p.drawLine(cx-10, 52, cx+10, 52)
             else:
                 p.drawLine(cx-10, 47, cx+10, 47)
                 p.drawLine(cx-10, 54, cx+10, 54)
@@ -563,7 +675,7 @@ class ControlBar(Chrome):
                 p.drawRoundedRect(QRectF(cell).adjusted(inset, inset, -inset, -inset), 7, 7)
 
     def select(self, index, pressed=False):
-        if index < 0 or index > 2:
+        if index < 0 or index > 3:
             return
         self.target_cell = float(index)
         if pressed:
@@ -574,13 +686,13 @@ class ControlBar(Chrome):
         self.update()
 
     def select_relative(self, step):
-        self.select((int(self.target_cell)+step) % 3)
+        self.select((int(self.target_cell)+step) % 4)
 
     def activate_selected(self):
         index = int(self.target_cell)
         self.select(index, pressed=True)
         (self.owner.toggle_fluid, self.owner.toggle_system,
-         self.owner.show_config)[index]()
+         self.owner.toggle_globe, self.owner.show_config)[index]()
 
     def animate_selector(self):
         now = time.monotonic()
@@ -598,7 +710,7 @@ class ControlBar(Chrome):
         self.update()
 
     def mouseMoveEvent(self, event):
-        self.hover_cell = next((i for i in range(3) if self.cell(i).contains(event.pos())), -1)
+        self.hover_cell = next((i for i in range(4) if self.cell(i).contains(event.pos())), -1)
         if self.hover_cell >= 0 and self.hover_cell != self.target_cell:
             self.select(self.hover_cell)
         self.update()
@@ -609,7 +721,7 @@ class ControlBar(Chrome):
 
     def mousePressEvent(self, event):
         for i, action in enumerate((self.owner.toggle_fluid, self.owner.toggle_system,
-                                    self.owner.show_config)):
+                                    self.owner.toggle_globe, self.owner.show_config)):
             if self.cell(i).contains(event.pos()):
                 self.select(i, pressed=True)
                 action()
@@ -624,6 +736,7 @@ class Malcip(QObject):
         self.bar = ControlBar(self)
         self.fluid = FluidPopup(self.values)
         self.system = SystemPopup()
+        self.globe = GlobePopup()
         self.server = QLocalServer()
         SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
         QLocalServer.removeServer(str(SOCKET_PATH))
@@ -640,7 +753,7 @@ class Malcip(QObject):
                 return False
             key = event.key()
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                self.bar.select(2, pressed=True)
+                self.bar.select(3, pressed=True)
                 self.show_config()
                 return True
             if self.bar.isVisible() and key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_A):
@@ -659,6 +772,10 @@ class Malcip(QObject):
             if key in (Qt.Key.Key_2, Qt.Key.Key_S):
                 self.bar.select(1, pressed=True)
                 self.toggle_system()
+                return True
+            if key in (Qt.Key.Key_3, Qt.Key.Key_G):
+                self.bar.select(2, pressed=True)
+                self.toggle_globe()
                 return True
             if key == Qt.Key.Key_R:
                 self.fluid.fluid = FlipFluid(self.values["particle_count"], self.values["flip_blend"])
@@ -687,6 +804,9 @@ class Malcip(QObject):
         system_y = bounds.y()+margin+self.fluid.height()+12 if self.fluid.isVisible() else bounds.y()+margin
         self.system.glide_to(QPoint(bounds.right()-self.system.width()-margin,
                                     system_y))
+        globe_y = system_y + self.system.height()+12 if self.system.isVisible() else system_y
+        self.globe.glide_to(QPoint(bounds.right()-self.globe.width()-margin,
+                                   globe_y))
 
     def toggle_bar(self):
         self.place()
@@ -700,6 +820,7 @@ class Malcip(QObject):
         self.bar.hide()
         self.fluid.hide()
         self.system.hide()
+        self.globe.hide()
 
     def toggle_fluid(self):
         if self.fluid.isVisible():
@@ -716,6 +837,15 @@ class Malcip(QObject):
         else:
             self.place()
             self.system.reveal()
+        self.place()
+        self.bar.update()
+
+    def toggle_globe(self):
+        if self.globe.isVisible():
+            self.globe.hide()
+        else:
+            self.place()
+            self.globe.reveal()
         self.place()
         self.bar.update()
 
@@ -738,6 +868,8 @@ class Malcip(QObject):
                     self.toggle_fluid()
                 elif command == "system":
                     self.toggle_system()
+                elif command == "globe":
+                    self.toggle_globe()
                 elif command == "config":
                     self.show_config()
             client.disconnectFromServer()
@@ -762,7 +894,7 @@ def send_command(command: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="MALCIP desktop popup utility")
     parser.add_argument("command", nargs="?", default="toggle",
-                        choices=("toggle", "fluid", "system", "config"))
+                        choices=("toggle", "fluid", "system", "globe", "config"))
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP)
@@ -774,6 +906,8 @@ def main():
     owner.bar.activateWindow()
     if args.command == "system":
         owner.toggle_system()
+    elif args.command == "globe":
+        owner.toggle_globe()
     elif args.command == "config":
         QTimer.singleShot(0, owner.show_config)
     return app.exec()
