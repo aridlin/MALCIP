@@ -10,7 +10,7 @@ The top center control bar uses 50 px cells, 5 px gaps, and a gliding selection 
 
 - **Fluid** is a particle/grid FLIP simulation rendered as a continuous water surface at physical display resolution. The pointer acts as a small solid object when it enters the water. A volume correction prevents the particle pool from gradually collapsing onto the floor. Ordered dither is limited to the surface edge.
 - **System** shows live CPU, memory, and root disk usage.
-- **Globe** is an automatically rotating, dithered orthographic Earth with a translucent ocean, lit land, and geographic grid. It uses Natural Earth 110m land polygons and requires no interaction.
+- **Globe** is an automatically rotating, dithered orthographic Earth with a translucent ocean, lit land, and geographic grid. Brief radar pings appear at random visible land locations and rotate with the planet. It uses Natural Earth 110m land polygons and requires no interaction.
 
 ## Install
 

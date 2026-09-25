@@ -467,6 +467,18 @@ class GlobeRenderer:
         painter.end()
         self.land = np.frombuffer(mask.bits().asstring(mask.bytesPerLine()*height),
                                   dtype=np.uint8).reshape(height, mask.bytesPerLine())[:, :width].copy()
+        self.land_points = np.argwhere(self.land > 127)
+
+    @staticmethod
+    def project(latitude: float, longitude: float, angle: float):
+        relative = longitude-angle
+        x = math.cos(latitude)*math.sin(relative)
+        world_z = math.cos(latitude)*math.cos(relative)
+        world_y = math.sin(latitude)
+        tilt = math.radians(23.4)
+        y = world_y*math.cos(tilt)-world_z*math.sin(tilt)
+        depth = world_y*math.sin(tilt)+world_z*math.cos(tilt)
+        return x, y, depth
 
     def image(self, angle: float, out_size: tuple[int, int]) -> QImage:
         width, height = out_size
@@ -511,6 +523,10 @@ class GlobePopup(Chrome):
         super().__init__(260, 291, pass_through=True)
         self.renderer = GlobeRenderer()
         self.started = time.monotonic()
+        self.angle = 0.0
+        self.rng = np.random.default_rng()
+        self.pings = []
+        self.next_ping = self.started + 1.2
         self.frame = self.renderer.image(0, self.render_size())
         self.timer = QTimer(self)
         self.timer.setInterval(33)
@@ -529,9 +545,24 @@ class GlobePopup(Chrome):
         super().hideEvent(event)
 
     def advance(self):
-        self.frame = self.renderer.image((time.monotonic()-self.started)*0.22,
-                                         self.render_size())
+        now = time.monotonic()
+        self.angle = (now-self.started)*0.22
+        if now >= self.next_ping:
+            self.spawn_ping(now)
+            self.next_ping = now + self.rng.uniform(1.3, 3.2)
+        self.pings = [ping for ping in self.pings if now-ping[2] < 1.8]
+        self.frame = self.renderer.image(self.angle, self.render_size())
         self.update()
+
+    def spawn_ping(self, now):
+        points = self.renderer.land_points
+        for _ in range(64):
+            iy, ix = points[self.rng.integers(len(points))]
+            latitude = math.pi/2-(iy+0.5)/self.renderer.land.shape[0]*math.pi
+            longitude = (ix+0.5)/self.renderer.land.shape[1]*2*math.pi-math.pi
+            if self.renderer.project(latitude, longitude, self.angle)[2] > 0.32:
+                self.pings.append((latitude, longitude, now))
+                return
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -548,6 +579,30 @@ class GlobePopup(Chrome):
         painter.drawEllipse(rect.adjusted(-2, -2, 2, 2))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.drawImage(rect, self.frame)
+        painter.save()
+        sphere_clip = QPainterPath()
+        sphere_clip.addEllipse(QRectF(rect))
+        painter.setClipPath(sphere_clip)
+        now = time.monotonic()
+        for latitude, longitude, started in self.pings:
+            x, y, depth = self.renderer.project(latitude, longitude, self.angle)
+            if depth <= 0:
+                continue
+            cx = rect.center().x() + x*rect.width()/2
+            cy = rect.center().y() - y*rect.height()/2
+            age = now-started
+            for delay in (0.0, 0.32):
+                progress = (age/1.8-delay)/(1-delay)
+                if 0 <= progress <= 1:
+                    radius = 3 + 21*progress
+                    alpha = round(205*(1-progress)**1.5)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.setPen(QPen(QColor(197, 255, 210, alpha), 1.5))
+                    painter.drawEllipse(QPointF(cx, cy), radius, radius)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(211, 255, 220, round(220*max(0, 1-age/1.8))))
+            painter.drawEllipse(QPointF(cx, cy), 2.3, 2.3)
+        painter.restore()
         painter.setPen(QColor("#6fae84"))
         painter.drawText(10, 281, "NATURAL EARTH / 110M")
 
