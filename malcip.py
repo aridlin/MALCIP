@@ -246,7 +246,8 @@ class Chrome(QWidget):
     def __init__(self, width, height, pass_through=False):
         super().__init__()
         self.setFixedSize(width, height)
-        flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+        kind = Qt.WindowType.ToolTip if pass_through else Qt.WindowType.Tool
+        flags = (kind | Qt.WindowType.FramelessWindowHint
                  | Qt.WindowType.WindowStaysOnTopHint)
         if pass_through:
             flags |= Qt.WindowType.WindowTransparentForInput | Qt.WindowType.WindowDoesNotAcceptFocus
@@ -255,6 +256,41 @@ class Chrome(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._animation = None
         self._move_animation = None
+        self._pointer_connection = None
+        self._pointer_unavailable = False
+        self.prepare_taskbar_hints()
+
+    def prepare_taskbar_hints(self):
+        # Set these before mapping: Plasma's task model can cache the first
+        # window state and keep an entry after a later client message.
+        try:
+            from Xlib import X, Xatom, display
+            connection = display.Display()
+            window = connection.create_resource_object("window", int(self.winId()))
+            atoms = [connection.intern_atom("_NET_WM_STATE_SKIP_TASKBAR"),
+                     connection.intern_atom("_NET_WM_STATE_SKIP_PAGER")]
+            window.change_property(connection.intern_atom("_NET_WM_STATE"),
+                                   Xatom.ATOM, 32, atoms, X.PropModeReplace)
+            connection.flush()
+            connection.close()
+        except Exception:
+            pass
+
+    def pointer_local(self) -> QPointF:
+        # XWayland's global coordinates are inconsistent across monitors with
+        # different scales. Query this window directly in physical pixels.
+        if not self._pointer_unavailable:
+            try:
+                if self._pointer_connection is None:
+                    from Xlib import display
+                    self._pointer_connection = display.Display()
+                window = self._pointer_connection.create_resource_object("window", int(self.winId()))
+                pointer = window.query_pointer()
+                scale = self.devicePixelRatioF()
+                return QPointF(pointer.win_x/scale, pointer.win_y/scale)
+            except Exception:
+                self._pointer_unavailable = True
+        return QPointF(self.mapFromGlobal(QCursor.pos()))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -327,7 +363,7 @@ class FluidPopup(Chrome):
         self.values = values
         self.fluid = FlipFluid(values["particle_count"], values["flip_blend"])
         self.frame = self.fluid.image(values["halftone"], self.render_size())
-        self.last_global = None
+        self.last_local = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance)
         self.timer.setInterval(33)
@@ -345,22 +381,22 @@ class FluidPopup(Chrome):
         super().hideEvent(event)
 
     def advance(self):
-        cursor = QCursor.pos()
-        local = self.mapFromGlobal(cursor)
+        local = self.pointer_local()
         rect = QRect(8, 33, self.width()-16, self.height()-57)
-        if rect.contains(local):
+        if QRectF(rect).contains(local):
             px = (local.x()-rect.x()) / rect.width() * self.fluid.w
             py = (local.y()-rect.y()) / rect.height() * self.fluid.h
-            dx = cursor.x()-self.last_global.x() if self.last_global else 0
-            dy = cursor.y()-self.last_global.y() if self.last_global else 0
+            dx = local.x()-self.last_local.x() if self.last_local else 0
+            dy = local.y()-self.last_local.y() if self.last_local else 0
             vx = dx*self.fluid.w/rect.width()
             vy = dy*self.fluid.h/rect.height()
             self.fluid.set_obstacle(px, py, vx, vy)
-            if self.last_global is not None:
+            if self.last_local is not None:
                 self.fluid.add_impulse(px, py, vx*7, vy*7)
+            self.last_local = local
         else:
             self.fluid.obstacle = None
-        self.last_global = cursor
+            self.last_local = None
         self.fluid.step()
         self.frame = self.fluid.image(self.values["halftone"], self.render_size())
         self.update()
@@ -419,7 +455,7 @@ class SystemPopup(Chrome):
         self.update()
 
     def track_pointer(self):
-        pos = self.mapFromGlobal(QCursor.pos())
+        pos = self.pointer_local()
         row = (pos.y()-40) // 27 if 8 <= pos.x() < self.width()-8 else -1
         self.hover_row = row if 0 <= row <= 2 else -1
         self.update()
@@ -475,8 +511,8 @@ class CursorFieldPopup(Chrome):
         now = time.monotonic()
         dt = min(now-self.last_tick, 0.05)
         self.last_tick = now
-        cursor = self.mapFromGlobal(QCursor.pos())
-        self.pointer = np.array([cursor.x(), cursor.y()]) if self.area.contains(cursor) else None
+        cursor = self.pointer_local()
+        self.pointer = np.array([cursor.x(), cursor.y()]) if QRectF(self.area).contains(cursor) else None
         phase = now-self.started
         idle = np.column_stack((np.sin(self.rest[:, 1]*0.056+phase*1.2),
                                 np.cos(self.rest[:, 0]*0.046+phase*0.9))) * 0.8

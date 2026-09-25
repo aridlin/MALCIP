@@ -13,7 +13,7 @@ The top center control bar uses 50 px cells, 5 px gaps, and a gliding selection 
 - **Fluid** is a particle/grid FLIP simulation rendered as a continuous water surface at physical display resolution. The pointer acts as a small solid object when it enters the water. A volume correction prevents the particle pool from gradually collapsing onto the floor. Ordered dither is limited to the surface edge.
 - **System** shows live CPU, memory, and root disk usage.
 - **Globe** is an automatically rotating, dithered orthographic Earth with a translucent ocean, lit land, and geographic grid. Brief radar pings appear at random visible land locations and rotate with the planet. It uses Natural Earth 110m land polygons and requires no interaction.
-- **Cursor Field** is a small springy halftone lattice. Its dots bend around the pointer when it crosses the panel, then settle back into a subtle idle motion.
+- **Cursor Field** is a small springy halftone lattice. Its dots bend around the pointer when it crosses the panel, then settle back into a subtle idle motion. Pointer coordinates are read relative to each XWayland window so mixed monitor scaling does not break hover effects.
 - **Signal Scope** draws real CPU utilization and aggregate network throughput as two live traces. It reads local counters only; no audio or microphone access is needed.
 
 ## Install
@@ -58,7 +58,7 @@ For Hyprland, one possible binding is:
 bind = SUPER SHIFT, P, exec, ~/.local/share/malcip/run.sh toggle
 ```
 
-The overlay windows request XWayland's skip-taskbar and skip-pager states, so KDE does not list them as separate Python tasks.
+The display-only popups use unmanaged, click-through tooltip windows. The keyboard-focused bar requests XWayland's skip-taskbar and skip-pager states before it appears.
 
 ## Current scope
 
