@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MALCIP
+Comment=Desktop popup control bar with FLIP fluid and system telemetry
+Exec=@EXEC@ toggle
+Terminal=false
+Categories=Utility;
+NoDisplay=false
+X-KDE-GlobalAccel-CommandShortcut=true
