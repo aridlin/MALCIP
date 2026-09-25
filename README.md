@@ -5,12 +5,16 @@
 ![MALCIP control bar](preview-bar.png)
 ![MALCIP fluid popup](preview-fluid.png)
 ![MALCIP globe popup](preview-globe.png)
+![MALCIP cursor field popup](preview-field.png)
+![MALCIP signal scope popup](preview-scope.png)
 
 The top center control bar uses 50 px cells, 5 px gaps, and a gliding selection frame inspired by Workspace Field. Its icons are drawn as geometry rather than emoji. Popups are transparent, click-through, and arranged in a stack at the side of the primary monitor. Closing one moves the others into place.
 
 - **Fluid** is a particle/grid FLIP simulation rendered as a continuous water surface at physical display resolution. The pointer acts as a small solid object when it enters the water. A volume correction prevents the particle pool from gradually collapsing onto the floor. Ordered dither is limited to the surface edge.
 - **System** shows live CPU, memory, and root disk usage.
 - **Globe** is an automatically rotating, dithered orthographic Earth with a translucent ocean, lit land, and geographic grid. Brief radar pings appear at random visible land locations and rotate with the planet. It uses Natural Earth 110m land polygons and requires no interaction.
+- **Cursor Field** is a small springy halftone lattice. Its dots bend around the pointer when it crosses the panel, then settle back into a subtle idle motion.
+- **Signal Scope** draws real CPU utilization and aggregate network throughput as two live traces. It reads local counters only; no audio or microphone access is needed.
 
 ## Install
 
@@ -39,13 +43,14 @@ While the bar is open:
 | --- | --- |
 | Arrow keys or A/D | Move the gliding selection frame |
 | Enter or E | Activate the selected cell |
-| 1/F, 2/S, 3/G | Toggle Fluid, System, or Globe directly |
+| 1/F, 2/S, 3/G, 4/C, 5/V | Toggle Fluid, System, Globe, Field, or Scope directly |
 | Shift+Enter | Open config |
 | R | Reset fluid |
 | H | Toggle surface dither |
 | Escape | Hide the bar |
 
 The cells also respond to mouse clicks. Config controls particle count, FLIP/PIC blend, and dither. A `MALCIP_SCREEN` environment variable can select a display by its Qt screen name.
+When both Field and Scope are open, they occupy separate columns. The other popups wrap into additional columns if the monitor is too short.
 
 For Hyprland, one possible binding is:
 

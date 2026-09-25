@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MALCIP: a desktop control bar with FLIP fluid and system popups."""
+"""MALCIP: small ambient desktop simulations and live instruments."""
 
 from __future__ import annotations
 
@@ -445,6 +445,170 @@ class SystemPopup(Chrome):
         p.drawText(10, 137, "LIVE TELEMETRY")
 
 
+class CursorFieldPopup(Chrome):
+    """A damped halftone lattice displaced by the global pointer."""
+
+    def __init__(self):
+        super().__init__(260, 184, pass_through=True)
+        self.area = QRect(10, 34, 240, 130)
+        xs, ys = np.meshgrid(np.linspace(21, 239, 17), np.linspace(45, 151, 9))
+        self.rest = np.column_stack((xs.ravel(), ys.ravel()))
+        self.offset = np.zeros_like(self.rest)
+        self.velocity = np.zeros_like(self.rest)
+        self.pointer = None
+        self.started = time.monotonic()
+        self.last_tick = self.started
+        self.timer = QTimer(self)
+        self.timer.setInterval(33)
+        self.timer.timeout.connect(self.advance)
+
+    def showEvent(self, event):
+        self.last_tick = time.monotonic()
+        self.timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
+
+    def advance(self):
+        now = time.monotonic()
+        dt = min(now-self.last_tick, 0.05)
+        self.last_tick = now
+        cursor = self.mapFromGlobal(QCursor.pos())
+        self.pointer = np.array([cursor.x(), cursor.y()]) if self.area.contains(cursor) else None
+        phase = now-self.started
+        idle = np.column_stack((np.sin(self.rest[:, 1]*0.056+phase*1.2),
+                                np.cos(self.rest[:, 0]*0.046+phase*0.9))) * 0.8
+        target = idle
+        if self.pointer is not None:
+            delta = self.rest-self.pointer
+            distance = np.maximum(np.linalg.norm(delta, axis=1), 0.01)
+            influence = np.maximum(0, 1-distance/62)**2
+            target = idle + delta/distance[:, None] * (18*influence)[:, None]
+        # Stable spring response independent of the timer's exact cadence.
+        self.velocity += (target-self.offset) * (95*dt)
+        self.velocity *= math.exp(-11*dt)
+        self.offset += self.velocity*dt
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(ACCENT)
+        p.setFont(QFont("monospace", 9, QFont.Weight.Bold))
+        p.drawText(10, 22, "CURSOR / FIELD")
+        p.setPen(QPen(QColor(87, 180, 124, 95), 1))
+        p.drawRect(self.area)
+        p.save()
+        p.setClipRect(self.area.adjusted(1, 1, -1, -1))
+        displacement = np.linalg.norm(self.offset, axis=1)
+        for index, (rest, offset) in enumerate(zip(self.rest, self.offset)):
+            x, y = rest+offset
+            radius = 0.9 + 0.38*((index % 4) == 0) + min(displacement[index]/10, 1.2)
+            alpha = min(245, round(115+displacement[index]*14))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(150, 244, 176, alpha))
+            p.drawEllipse(QPointF(float(x), float(y)), radius, radius)
+        if self.pointer is not None:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(173, 255, 194, 130), 1))
+            p.drawEllipse(QPointF(*self.pointer), 10, 10)
+            p.setPen(QPen(QColor(95, 207, 132, 55), 1))
+            p.drawEllipse(QPointF(*self.pointer), 28, 28)
+        p.restore()
+        p.setPen(QColor("#6fae84"))
+        p.setFont(QFont("monospace", 7))
+        p.drawText(10, 178, "HALFTONE / 153 NODES")
+
+
+class SignalScopePopup(Chrome):
+    """Two live traces: CPU utilization and aggregate network throughput."""
+
+    def __init__(self):
+        super().__init__(260, 174, pass_through=True)
+        self.cpu = 0.0
+        self.network_rate = 0.0
+        self.network_peak = 65536.0
+        self.cpu_history = [0.0]*118
+        self.network_history = [0.0]*118
+        self.last_io = psutil.net_io_counters()
+        self.last_sample = time.monotonic()
+        psutil.cpu_percent(interval=None)
+        self.timer = QTimer(self)
+        self.timer.setInterval(100)
+        self.timer.timeout.connect(self.sample)
+
+    def showEvent(self, event):
+        self.last_io = psutil.net_io_counters()
+        self.last_sample = time.monotonic()
+        psutil.cpu_percent(interval=None)
+        self.timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
+
+    def sample(self):
+        now = time.monotonic()
+        elapsed = max(now-self.last_sample, 0.001)
+        io = psutil.net_io_counters()
+        delta = max(0, io.bytes_recv-self.last_io.bytes_recv) + max(0, io.bytes_sent-self.last_io.bytes_sent)
+        self.network_rate = delta/elapsed
+        self.cpu = psutil.cpu_percent(interval=None)
+        self.network_peak = max(65536, self.network_rate, self.network_peak*0.992)
+        self.cpu_history.pop(0)
+        self.cpu_history.append(self.cpu/100)
+        self.network_history.pop(0)
+        self.network_history.append(min(1, self.network_rate/self.network_peak))
+        self.last_io = io
+        self.last_sample = now
+        self.update()
+
+    @staticmethod
+    def trace(painter, values, rect, color):
+        points = QPolygonF([QPointF(rect.left()+i*(rect.width()/(len(values)-1)),
+                                    rect.bottom()-value*rect.height())
+                            for i, value in enumerate(values)])
+        painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 38), 5))
+        painter.drawPolyline(points)
+        painter.setPen(QPen(color, 1.35))
+        painter.drawPolyline(points)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(ACCENT)
+        p.setFont(QFont("monospace", 9, QFont.Weight.Bold))
+        p.drawText(10, 22, "SIGNAL / SCOPE")
+        upper = QRectF(40, 37, 210, 51)
+        lower = QRectF(40, 100, 210, 51)
+        p.save()
+        p.setClipRect(QRectF(8, 34, 244, 122))
+        for rect in (upper, lower):
+            p.setPen(QPen(QColor(63, 132, 89, 95), 1))
+            p.drawRect(rect)
+            p.setPen(QPen(QColor(63, 132, 89, 38), 1))
+            for fraction in (0.25, 0.5, 0.75):
+                x = rect.left()+rect.width()*fraction
+                y = rect.top()+rect.height()*fraction
+                p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+                p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+        self.trace(p, self.cpu_history, upper, QColor("#a8ffb7"))
+        self.trace(p, self.network_history, lower, QColor("#66dca6"))
+        p.restore()
+        p.setPen(QColor("#b9ebc7"))
+        p.setFont(QFont("monospace", 7, QFont.Weight.Bold))
+        p.drawText(10, 54, "CPU")
+        p.drawText(10, 117, "NET")
+        p.setPen(QColor("#6fae84"))
+        p.drawText(10, 168, f"CPU {self.cpu:.0f}%")
+        p.drawText(145, 168, f"NET {self.network_rate/1024:.0f} KiB/s")
+
+
 class GlobeRenderer:
     """Software-rendered orthographic Earth using Natural Earth land polygons."""
 
@@ -650,7 +814,7 @@ class ConfigDialog(QDialog):
 
 class ControlBar(Chrome):
     def __init__(self, owner):
-        super().__init__(365, 91)
+        super().__init__(475, 91)
         self.owner = owner
         self.hover_cell = -1
         self.setMouseTracking(True)
@@ -680,6 +844,8 @@ class ControlBar(Chrome):
         for i, (label, active) in enumerate((("FLUID", self.owner.fluid.isVisible()),
                                              ("SYSTEM", self.owner.system.isVisible()),
                                              ("GLOBE", self.owner.globe.isVisible()),
+                                             ("FIELD", self.owner.field.isVisible()),
+                                             ("SCOPE", self.owner.scope.isVisible()),
                                              ("CONFIG", False))):
             cell = self.cell(i)
             p.setBrush(QColor("#408f61" if active else "#002f18"))
@@ -702,6 +868,20 @@ class ControlBar(Chrome):
                 p.drawEllipse(QRectF(cx-10, 42, 20, 20))
                 p.drawEllipse(QRectF(cx-5, 42, 10, 20))
                 p.drawLine(cx-10, 52, cx+10, 52)
+            elif i == 3:
+                for dx, dy, radius in ((-7,-7,1.5),(0,-7,1.5),(7,-7,1.5),
+                                       (-7,0,1.5),(7,0,1.5),
+                                       (-7,7,1.5),(0,7,1.5),(7,7,1.5)):
+                    p.setBrush(QColor("#cfe3d1"))
+                    p.drawEllipse(QPointF(cx+dx, 53+dy), radius, radius)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(cx, 53), 4, 4)
+            elif i == 4:
+                path = QPainterPath()
+                path.moveTo(cx-11, 54)
+                for dx, dy in ((-7,54),(-4,48),(-1,59),(3,43),(6,55),(11,55)):
+                    path.lineTo(cx+dx, dy)
+                p.drawPath(path)
             else:
                 p.drawLine(cx-10, 47, cx+10, 47)
                 p.drawLine(cx-10, 54, cx+10, 54)
@@ -730,7 +910,7 @@ class ControlBar(Chrome):
                 p.drawRoundedRect(QRectF(cell).adjusted(inset, inset, -inset, -inset), 7, 7)
 
     def select(self, index, pressed=False):
-        if index < 0 or index > 3:
+        if index < 0 or index > 5:
             return
         self.target_cell = float(index)
         if pressed:
@@ -741,13 +921,14 @@ class ControlBar(Chrome):
         self.update()
 
     def select_relative(self, step):
-        self.select((int(self.target_cell)+step) % 4)
+        self.select((int(self.target_cell)+step) % 6)
 
     def activate_selected(self):
         index = int(self.target_cell)
         self.select(index, pressed=True)
         (self.owner.toggle_fluid, self.owner.toggle_system,
-         self.owner.toggle_globe, self.owner.show_config)[index]()
+         self.owner.toggle_globe, self.owner.toggle_field,
+         self.owner.toggle_scope, self.owner.show_config)[index]()
 
     def animate_selector(self):
         now = time.monotonic()
@@ -765,7 +946,7 @@ class ControlBar(Chrome):
         self.update()
 
     def mouseMoveEvent(self, event):
-        self.hover_cell = next((i for i in range(4) if self.cell(i).contains(event.pos())), -1)
+        self.hover_cell = next((i for i in range(6) if self.cell(i).contains(event.pos())), -1)
         if self.hover_cell >= 0 and self.hover_cell != self.target_cell:
             self.select(self.hover_cell)
         self.update()
@@ -776,7 +957,8 @@ class ControlBar(Chrome):
 
     def mousePressEvent(self, event):
         for i, action in enumerate((self.owner.toggle_fluid, self.owner.toggle_system,
-                                    self.owner.toggle_globe, self.owner.show_config)):
+                                    self.owner.toggle_globe, self.owner.toggle_field,
+                                    self.owner.toggle_scope, self.owner.show_config)):
             if self.cell(i).contains(event.pos()):
                 self.select(i, pressed=True)
                 action()
@@ -792,6 +974,8 @@ class Malcip(QObject):
         self.fluid = FluidPopup(self.values)
         self.system = SystemPopup()
         self.globe = GlobePopup()
+        self.field = CursorFieldPopup()
+        self.scope = SignalScopePopup()
         self.server = QLocalServer()
         SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
         QLocalServer.removeServer(str(SOCKET_PATH))
@@ -808,7 +992,7 @@ class Malcip(QObject):
                 return False
             key = event.key()
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                self.bar.select(3, pressed=True)
+                self.bar.select(5, pressed=True)
                 self.show_config()
                 return True
             if self.bar.isVisible() and key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_A):
@@ -832,6 +1016,14 @@ class Malcip(QObject):
                 self.bar.select(2, pressed=True)
                 self.toggle_globe()
                 return True
+            if key in (Qt.Key.Key_4, Qt.Key.Key_C):
+                self.bar.select(3, pressed=True)
+                self.toggle_field()
+                return True
+            if key in (Qt.Key.Key_5, Qt.Key.Key_V):
+                self.bar.select(4, pressed=True)
+                self.toggle_scope()
+                return True
             if key == Qt.Key.Key_R:
                 self.fluid.fluid = FlipFluid(self.values["particle_count"], self.values["flip_blend"])
                 return True
@@ -854,14 +1046,25 @@ class Malcip(QObject):
         center_x = bounds.x() + bounds.width()//2
         margin = 20
         self.bar.move(center_x-self.bar.width()//2, bounds.y()+margin)
-        side_x = bounds.right()-self.fluid.width()-margin
-        self.fluid.move(side_x, bounds.y()+margin)
-        system_y = bounds.y()+margin+self.fluid.height()+12 if self.fluid.isVisible() else bounds.y()+margin
-        self.system.glide_to(QPoint(bounds.right()-self.system.width()-margin,
-                                    system_y))
-        globe_y = system_y + self.system.height()+12 if self.system.isVisible() else system_y
-        self.globe.glide_to(QPoint(bounds.right()-self.globe.width()-margin,
-                                   globe_y))
+        visible = [popup for popup in (self.fluid, self.system, self.globe,
+                                       self.field, self.scope) if popup.isVisible()]
+        column_right = bounds.right()-margin
+        y = bounds.y()+margin
+        column_width = 0
+        for popup in visible:
+            # Give the two small instruments separate columns. On mixed-scale
+            # XWayland desktops KWin can clamp the final stacked window upward.
+            if popup is self.scope and self.field.isVisible():
+                column_right -= column_width+12
+                y = bounds.y()+margin
+                column_width = 0
+            if y > bounds.y()+margin and y+popup.height() > bounds.bottom()-margin:
+                column_right -= column_width+12
+                y = bounds.y()+margin
+                column_width = 0
+            popup.glide_to(QPoint(column_right-popup.width(), y))
+            column_width = max(column_width, popup.width())
+            y += popup.height()+12
 
     def toggle_bar(self):
         self.place()
@@ -876,33 +1079,33 @@ class Malcip(QObject):
         self.fluid.hide()
         self.system.hide()
         self.globe.hide()
+        self.field.hide()
+        self.scope.hide()
+
+    def toggle_popup(self, popup):
+        if popup.isVisible():
+            popup.hide()
+        else:
+            bounds = self.screen().availableGeometry()
+            popup.move(bounds.right()-popup.width()-20, bounds.y()+20)
+            popup.reveal()
+        self.place()
+        self.bar.update()
 
     def toggle_fluid(self):
-        if self.fluid.isVisible():
-            self.fluid.hide()
-        else:
-            self.place()
-            self.fluid.reveal()
-        self.place()
-        self.bar.update()
+        self.toggle_popup(self.fluid)
 
     def toggle_system(self):
-        if self.system.isVisible():
-            self.system.hide()
-        else:
-            self.place()
-            self.system.reveal()
-        self.place()
-        self.bar.update()
+        self.toggle_popup(self.system)
 
     def toggle_globe(self):
-        if self.globe.isVisible():
-            self.globe.hide()
-        else:
-            self.place()
-            self.globe.reveal()
-        self.place()
-        self.bar.update()
+        self.toggle_popup(self.globe)
+
+    def toggle_field(self):
+        self.toggle_popup(self.field)
+
+    def toggle_scope(self):
+        self.toggle_popup(self.scope)
 
     def show_config(self):
         ConfigDialog(self.values, self.apply_config, self.bar).exec()
@@ -925,6 +1128,10 @@ class Malcip(QObject):
                     self.toggle_system()
                 elif command == "globe":
                     self.toggle_globe()
+                elif command == "field":
+                    self.toggle_field()
+                elif command == "scope":
+                    self.toggle_scope()
                 elif command == "config":
                     self.show_config()
             client.disconnectFromServer()
@@ -949,7 +1156,7 @@ def send_command(command: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="MALCIP desktop popup utility")
     parser.add_argument("command", nargs="?", default="toggle",
-                        choices=("toggle", "fluid", "system", "globe", "config"))
+                        choices=("toggle", "fluid", "system", "globe", "field", "scope", "config"))
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP)
@@ -957,12 +1164,16 @@ def main():
         return 0
     owner = Malcip(app)
     owner.bar.reveal()
-    owner.fluid.reveal()
+    owner.toggle_fluid()
     owner.bar.activateWindow()
     if args.command == "system":
         owner.toggle_system()
     elif args.command == "globe":
         owner.toggle_globe()
+    elif args.command == "field":
+        owner.toggle_field()
+    elif args.command == "scope":
+        owner.toggle_scope()
     elif args.command == "config":
         QTimer.singleShot(0, owner.show_config)
     return app.exec()
