@@ -8,13 +8,20 @@
 ![MALCIP cursor field popup](preview-field.png)
 ![MALCIP signal scope popup](preview-scope.png)
 
-The top center control bar uses 50 px cells, 5 px gaps, and a gliding selection frame inspired by Workspace Field. Its icons are drawn as geometry rather than emoji. Popups are transparent, click-through, and arranged in a stack at the side of the primary monitor. Closing one moves the others into place.
+The top center control bar uses a compact two-row grid of 50 px cells with 5 px gaps and a gliding selection frame inspired by Workspace Field. Its icons are drawn as geometry rather than emoji. Popups are transparent, click-through, and arranged at the side of the primary monitor in the order they were enabled. Closing one moves the others into place.
 
 - **Fluid** is a particle/grid FLIP simulation rendered as a continuous water surface at physical display resolution. The pointer acts as a small solid object when it enters the water. A volume correction prevents the particle pool from gradually collapsing onto the floor. Ordered dither is limited to the surface edge.
 - **System** shows live CPU, memory, and root disk usage.
 - **Globe** is an automatically rotating, dithered orthographic Earth with a translucent ocean, lit land, and geographic grid. Brief radar pings appear at random visible land locations and rotate with the planet. It uses Natural Earth 110m land polygons and requires no interaction.
 - **Cursor Field** is a small springy halftone lattice. Its dots bend around the pointer when it crosses the panel, then settle back into a subtle idle motion. Pointer coordinates are read relative to each XWayland window so mixed monitor scaling does not break hover effects.
 - **Signal Scope** draws real CPU utilization and aggregate network throughput as two live traces. It reads local counters only; no audio or microphone access is needed.
+- **Decoder** continuously scrambles hexadecimal glyphs while a narrow alignment pass locks and releases columns.
+- **Block Cipher** permutes a grid of shifting tiles through fictional substitution rounds.
+- **Trace** sends pulses through a changing route graph while an acquisition ring closes around it.
+- **Buffer** fragments, shifts, and releases bands of synthetic memory blocks.
+- **Hash Grid** sweeps a comparison window through a fading field of illuminated cells.
+
+The five tool panels deliberately imitate cinematic computer utilities. Their numbers and operations are decorative. Moving the pointer through any tool changes its active scan position without capturing clicks.
 
 ## Install
 
@@ -42,16 +49,17 @@ While the bar is open:
 
 | Keys | Action |
 | --- | --- |
-| Arrow keys or A/D | Move the gliding selection frame |
+| Arrow keys or A/D | Move the gliding selection frame through the grid |
 | Enter or E | Activate the selected cell |
 | 1/F, 2/S, 3/G, 4/C, 5/V | Toggle Fluid, System, Globe, Field, or Scope directly |
+| 6, 7, 8, 9, 0 | Toggle Decoder, Cipher, Trace, Buffer, or Hash Grid |
 | Shift+Enter | Open config |
 | R | Reset fluid |
 | H | Toggle surface dither |
 | Escape | Hide the bar |
 
 The cells also respond to mouse clicks. Config controls particle count, FLIP/PIC blend, and dither. A `MALCIP_SCREEN` environment variable can select a display by its Qt screen name.
-When both Field and Scope are open, they occupy separate columns. The other popups wrap into additional columns if the monitor is too short.
+Popups wrap into additional columns if the monitor is too short.
 
 For Hyprland, one possible binding is:
 
