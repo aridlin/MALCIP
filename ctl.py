@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 
-COMMANDS = {"toggle", "fluid", "system", "globe", "field", "scope", "config"}
+COMMANDS = {"toggle", "fluid", "system", "globe", "field", "scope",
+            "decoder", "cipher", "trace", "buffer", "hash", "config"}
 
 
 def main() -> int:

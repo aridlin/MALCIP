@@ -31,7 +31,9 @@ SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/malcip-{os.getuid()}
 
 
 def load_config() -> dict:
-    defaults = {"particle_count": 2400, "flip_blend": 0.94, "halftone": True}
+    defaults = {"particle_count": 2400, "flip_blend": 0.94, "halftone": True,
+                "tool_speed": 100, "popup_gap": 12, "popup_side": "right",
+                "panel_opacity": 148}
     try:
         values = json.loads(CONFIG_PATH.read_text())
         return {**defaults, **values}
@@ -254,6 +256,8 @@ class FlipFluid:
 
 
 class Chrome(QWidget):
+    background_alpha = 148
+
     def __init__(self, width, height, pass_through=False):
         super().__init__()
         self.setFixedSize(width, height)
@@ -333,7 +337,7 @@ class Chrome(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(BORDER, 1))
-        p.setBrush(QColor(8, 19, 16, 148))
+        p.setBrush(QColor(8, 19, 16, self.background_alpha))
         p.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 4, 4)
         p.setPen(QPen(QColor(72, 145, 105, 24), 1))
         for x in range(8, self.width()-2, 16):
@@ -677,8 +681,12 @@ class AnimatedToolPopup(Chrome):
         self.pointer = None
         self.rng = np.random.default_rng()
         self.timer = QTimer(self)
+        self.base_interval = interval
         self.timer.setInterval(interval)
         self.timer.timeout.connect(self.advance)
+
+    def set_speed(self, percent):
+        self.timer.setInterval(max(20, round(self.base_interval*100/percent)))
 
     def showEvent(self, event):
         self.timer.start()
@@ -1086,6 +1094,24 @@ class ConfigDialog(QDialog):
         self.halftone = QCheckBox("Halftone / ordered dither")
         self.halftone.setChecked(values["halftone"])
         layout.addWidget(self.halftone)
+        layout.addWidget(QLabel("Cinematic tool speed"))
+        self.tool_speed = QSlider(Qt.Orientation.Horizontal)
+        self.tool_speed.setRange(40, 180)
+        self.tool_speed.setValue(values["tool_speed"])
+        layout.addWidget(self.tool_speed)
+        layout.addWidget(QLabel("Panel background opacity"))
+        self.panel_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.panel_opacity.setRange(45, 220)
+        self.panel_opacity.setValue(values["panel_opacity"])
+        layout.addWidget(self.panel_opacity)
+        layout.addWidget(QLabel("Popup spacing"))
+        self.popup_gap = QSlider(Qt.Orientation.Horizontal)
+        self.popup_gap.setRange(4, 32)
+        self.popup_gap.setValue(values["popup_gap"])
+        layout.addWidget(self.popup_gap)
+        self.left_side = QCheckBox("Arrange popups on left side")
+        self.left_side.setChecked(values["popup_side"] == "left")
+        layout.addWidget(self.left_side)
         apply = QPushButton("APPLY")
         apply.clicked.connect(self.apply)
         layout.addWidget(apply)
@@ -1093,7 +1119,11 @@ class ConfigDialog(QDialog):
     def apply(self):
         self.values.update(particle_count=self.count.value(),
                            flip_blend=self.blend.value()/100,
-                           halftone=self.halftone.isChecked())
+                           halftone=self.halftone.isChecked(),
+                           tool_speed=self.tool_speed.value(),
+                           panel_opacity=self.panel_opacity.value(),
+                           popup_gap=self.popup_gap.value(),
+                           popup_side="left" if self.left_side.isChecked() else "right")
         save_config(self.values)
         self.changed()
         self.accept()
@@ -1281,6 +1311,7 @@ class Malcip(QObject):
         super().__init__()
         self.app = app
         self.values = load_config()
+        Chrome.background_alpha = self.values["panel_opacity"]
         self.bar = ControlBar(self)
         self.fluid = FluidPopup(self.values)
         self.system = SystemPopup()
@@ -1292,6 +1323,8 @@ class Malcip(QObject):
         self.trace = TracePopup()
         self.buffer = BufferPopup()
         self.hash_grid = HashGridPopup()
+        for popup in self.tool_popups():
+            popup.set_speed(self.values["tool_speed"])
         self.popup_order = []
         self.server = QLocalServer()
         SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1401,23 +1434,29 @@ class Malcip(QObject):
         return (self.fluid, self.system, self.globe, self.field, self.scope,
                 self.decoder, self.cipher, self.trace, self.buffer, self.hash_grid)
 
+    def tool_popups(self):
+        return (self.decoder, self.cipher, self.trace, self.buffer, self.hash_grid)
+
     def place(self):
         bounds = self.screen().availableGeometry()
         center_x = bounds.x() + bounds.width()//2
         margin = 20
         self.bar.move(center_x-self.bar.width()//2, bounds.y()+margin)
         visible = [popup for popup in self.popup_order if popup.isVisible()]
-        column_right = bounds.right()-margin
+        left_side = self.values["popup_side"] == "left"
+        column_edge = bounds.x()+margin if left_side else bounds.right()-margin
         y = bounds.y()+margin
         column_width = 0
+        gap = self.values["popup_gap"]
         for popup in visible:
             if y > bounds.y()+margin and y+popup.height() > bounds.bottom()-margin:
-                column_right -= column_width+12
+                column_edge += (column_width+gap) * (1 if left_side else -1)
                 y = bounds.y()+margin
                 column_width = 0
-            popup.glide_to(QPoint(column_right-popup.width(), y))
+            x = column_edge if left_side else column_edge-popup.width()
+            popup.glide_to(QPoint(x, y))
             column_width = max(column_width, popup.width())
-            y += popup.height()+12
+            y += popup.height()+gap
 
     def toggle_bar(self):
         self.place()
@@ -1481,7 +1520,12 @@ class Malcip(QObject):
     def apply_config(self):
         self.fluid.fluid.resize_particles(self.values["particle_count"])
         self.fluid.fluid.blend = self.values["flip_blend"]
-        self.fluid.update()
+        Chrome.background_alpha = self.values["panel_opacity"]
+        for popup in self.tool_popups():
+            popup.set_speed(self.values["tool_speed"])
+        for popup in (self.bar, *self.all_popups()):
+            popup.update()
+        self.place()
 
     def on_connection(self):
         while self.server.hasPendingConnections():

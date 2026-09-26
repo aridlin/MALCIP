@@ -58,7 +58,7 @@ While the bar is open:
 | H | Toggle surface dither |
 | Escape | Hide the bar |
 
-The cells also respond to mouse clicks. Config controls particle count, FLIP/PIC blend, and dither. A `MALCIP_SCREEN` environment variable can select a display by its Qt screen name.
+The cells also respond to mouse clicks. Config controls particle count, FLIP/PIC blend, dither, cinematic-tool speed, panel background opacity, popup spacing, and left/right placement. A `MALCIP_SCREEN` environment variable can select a display by its Qt screen name.
 Popups wrap into additional columns if the monitor is too short.
 
 For Hyprland, one possible binding is:
