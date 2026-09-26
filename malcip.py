@@ -195,20 +195,31 @@ class FlipFluid:
             self.x = np.clip(self.x, 2, self.w-3)
             self.y = np.clip(self.y, 2, self.h-3)
 
-    def image(self, halftone=True, out_size=(318, 152)) -> QImage:
-        # Reconstruct a single water surface from the FLIP particles. Rendering
-        # particle density alone makes a liquid pool look like floating smoke.
-        bins = np.clip(self.x.astype(np.int32), 0, self.w-1)
-        surface = np.full(self.w, np.nan, dtype=np.float32)
-        for column in range(self.w):
-            nearby = self.y[np.abs(bins-column) <= 3]
-            if len(nearby):
-                surface[column] = np.percentile(nearby, 12)
-        known = np.flatnonzero(np.isfinite(surface))
-        surface = np.interp(np.arange(self.w), known, surface[known])
+    def surface_height(self) -> np.ndarray:
+        # One shared histogram replaces a percentile call for every column.
+        # Quarter-cell vertical bins stay below one physical output pixel.
+        vertical_bins = self.h*4
+        xbin = np.clip(self.x.astype(np.int32), 0, self.w-1)
+        ybin = np.clip((self.y*4).astype(np.int32), 0, vertical_bins-1)
+        density = np.bincount(xbin*vertical_bins+ybin,
+                              minlength=self.w*vertical_bins).reshape(self.w, vertical_bins)
+        prefix = np.concatenate((np.zeros((1, vertical_bins), dtype=np.int64),
+                                 np.cumsum(density, axis=0)), axis=0)
+        columns = np.arange(self.w)
+        nearby = prefix[np.minimum(columns+4, self.w)] - prefix[np.maximum(columns-3, 0)]
+        counts = nearby.sum(axis=1)
+        threshold = np.maximum(1, np.ceil(counts*0.12)).astype(np.int64)
+        level = (np.cumsum(nearby, axis=1) >= threshold[:, None]).argmax(axis=1)
+        valid = np.flatnonzero(counts)
+        surface = np.interp(columns, valid, (level[valid]+0.5)/4)
         for _ in range(3):
             surface = np.convolve(np.pad(surface, (2, 2), mode="edge"),
                                   np.array([1, 2, 3, 2, 1])/9, mode="valid")
+        return surface
+
+    def image(self, halftone=True, out_size=(318, 152)) -> QImage:
+        # Reconstruct a continuous water surface from the FLIP particles.
+        surface = self.surface_height()
         out_w, out_h = out_size
         xs = np.linspace(0, self.w-1, out_w)
         ys = np.linspace(0, self.h-1, out_h)
@@ -257,7 +268,6 @@ class Chrome(QWidget):
         self._animation = None
         self._move_animation = None
         self._pointer_connection = None
-        self._pointer_unavailable = False
         self.prepare_taskbar_hints()
 
     def prepare_taskbar_hints(self):
@@ -279,7 +289,9 @@ class Chrome(QWidget):
     def pointer_local(self) -> QPointF:
         # XWayland's global coordinates are inconsistent across monitors with
         # different scales. Query this window directly in physical pixels.
-        if not self._pointer_unavailable:
+        # A tooltip can get a new XID after being hidden; reopen the X
+        # connection instead of permanently switching to broken Qt mapping.
+        for _ in range(2):
             try:
                 if self._pointer_connection is None:
                     from Xlib import display
@@ -289,7 +301,12 @@ class Chrome(QWidget):
                 scale = self.devicePixelRatioF()
                 return QPointF(pointer.win_x/scale, pointer.win_y/scale)
             except Exception:
-                self._pointer_unavailable = True
+                if self._pointer_connection is not None:
+                    try:
+                        self._pointer_connection.close()
+                    except Exception:
+                        pass
+                self._pointer_connection = None
         return QPointF(self.mapFromGlobal(QCursor.pos()))
 
     def showEvent(self, event):
@@ -324,12 +341,12 @@ class Chrome(QWidget):
         for y in range(8, self.height()-2, 16):
             p.drawLine(3, y, self.width()-4, y)
 
-    def reveal(self):
+    def reveal(self, duration=180):
         self.setWindowOpacity(0)
         self.show()
         self.raise_()
         self._animation = QPropertyAnimation(self, b"windowOpacity")
-        self._animation.setDuration(260)
+        self._animation.setDuration(duration)
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -344,7 +361,7 @@ class Chrome(QWidget):
         if self._move_animation:
             self._move_animation.stop()
         self._move_animation = QPropertyAnimation(self, b"pos")
-        self._move_animation.setDuration(260)
+        self._move_animation.setDuration(210)
         self._move_animation.setStartValue(self.pos())
         self._move_animation.setEndValue(target)
         self._move_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -457,8 +474,10 @@ class SystemPopup(Chrome):
     def track_pointer(self):
         pos = self.pointer_local()
         row = (pos.y()-40) // 27 if 8 <= pos.x() < self.width()-8 else -1
-        self.hover_row = row if 0 <= row <= 2 else -1
-        self.update()
+        selected = row if 0 <= row <= 2 else -1
+        if selected != self.hover_row:
+            self.hover_row = selected
+            self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -495,7 +514,7 @@ class CursorFieldPopup(Chrome):
         self.started = time.monotonic()
         self.last_tick = self.started
         self.timer = QTimer(self)
-        self.timer.setInterval(33)
+        self.timer.setInterval(50)
         self.timer.timeout.connect(self.advance)
 
     def showEvent(self, event):
@@ -513,6 +532,9 @@ class CursorFieldPopup(Chrome):
         self.last_tick = now
         cursor = self.pointer_local()
         self.pointer = np.array([cursor.x(), cursor.y()]) if QRectF(self.area).contains(cursor) else None
+        interval = 33 if self.pointer is not None else 50
+        if self.timer.interval() != interval:
+            self.timer.setInterval(interval)
         phase = now-self.started
         idle = np.column_stack((np.sin(self.rest[:, 1]*0.056+phase*1.2),
                                 np.cos(self.rest[:, 0]*0.046+phase*0.9))) * 0.8
@@ -668,6 +690,7 @@ class GlobeRenderer:
         self.land = np.frombuffer(mask.bits().asstring(mask.bytesPerLine()*height),
                                   dtype=np.uint8).reshape(height, mask.bytesPerLine())[:, :width].copy()
         self.land_points = np.argwhere(self.land > 127)
+        self._frame_cache = None
 
     @staticmethod
     def project(latitude: float, longitude: float, angle: float):
@@ -680,7 +703,9 @@ class GlobeRenderer:
         depth = world_y*math.sin(tilt)+world_z*math.cos(tilt)
         return x, y, depth
 
-    def image(self, angle: float, out_size: tuple[int, int]) -> QImage:
+    def frame_geometry(self, out_size: tuple[int, int]):
+        if self._frame_cache is not None and self._frame_cache[0] == out_size:
+            return self._frame_cache[1]
         width, height = out_size
         xx = (np.arange(width, dtype=np.float32)+0.5-width/2)/(width/2)
         yy = -(np.arange(height, dtype=np.float32)+0.5-height/2)/(height/2)
@@ -691,27 +716,36 @@ class GlobeRenderer:
         world_y = y*math.cos(tilt)+z*math.sin(tilt)
         world_z = z*math.cos(tilt)-y*math.sin(tilt)
         latitude = np.arcsin(np.clip(world_y, -1, 1))
-        longitude = (np.arctan2(x, world_z)+angle+math.pi)%(2*math.pi)-math.pi
-        ix = ((longitude+math.pi)/(2*math.pi)*self.land.shape[1]).astype(np.int32) % self.land.shape[1]
+        base_longitude = np.arctan2(x, world_z)
         iy = np.clip(((math.pi/2-latitude)/math.pi*self.land.shape[0]).astype(np.int32),
                      0, self.land.shape[0]-1)
-        land = self.land[iy, ix] > 127
-        coast = land & (~np.roll(land, 1, 0) | ~np.roll(land, -1, 0)
-                        | ~np.roll(land, 1, 1) | ~np.roll(land, -1, 1))
         light = np.clip(0.28 + 0.72*(0.28*x+0.25*y+0.88*z), 0.16, 1.0)
         bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6],
                           [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.float32)/16
         by, bx = np.indices((height, width))
         shade = light*(0.91 + 0.09*(bayer[by%4, bx%4] < light))
-        grid_lon = np.abs((np.degrees(longitude)+15)%30-15) < 0.55
         grid_lat = np.abs((np.degrees(latitude)+15)%30-15) < 0.55
-        graticule = (grid_lon | grid_lat) & (radius2 < 1)
+        inside = radius2 < 1
+        coverage = np.clip((1-np.sqrt(radius2))*min(width, height)/2, 0, 1)
+        geometry = (base_longitude, iy, shade, grid_lat, inside, coverage)
+        self._frame_cache = (out_size, geometry)
+        return geometry
+
+    def image(self, angle: float, out_size: tuple[int, int]) -> QImage:
+        width, height = out_size
+        base_longitude, iy, shade, grid_lat, inside, coverage = self.frame_geometry(out_size)
+        longitude = (base_longitude+angle+math.pi)%(2*math.pi)-math.pi
+        ix = ((longitude+math.pi)/(2*math.pi)*self.land.shape[1]).astype(np.int32) % self.land.shape[1]
+        land = self.land[iy, ix] > 127
+        coast = land & (~np.roll(land, 1, 0) | ~np.roll(land, -1, 0)
+                        | ~np.roll(land, 1, 1) | ~np.roll(land, -1, 1))
+        grid_lon = np.abs((np.degrees(longitude)+15)%30-15) < 0.55
+        graticule = (grid_lon | grid_lat) & inside
         rgb = np.empty((height, width, 4), dtype=np.uint8)
         for channel, (ocean, earth) in enumerate(((15, 92), (89, 192), (85, 122))):
             value = np.where(land, earth, ocean)*shade
             value += coast*40 + graticule*18
             rgb[:, :, channel] = np.clip(value, 0, 255).astype(np.uint8)
-        coverage = np.clip((1-np.sqrt(radius2))*min(width, height)/2, 0, 1)
         rgb[:, :, 3] = (coverage*232).astype(np.uint8)
         rgb = np.ascontiguousarray(rgb)
         return QImage(rgb.data, width, height, rgb.strides[0],
@@ -729,7 +763,7 @@ class GlobePopup(Chrome):
         self.next_ping = self.started + 1.2
         self.frame = self.renderer.image(0, self.render_size())
         self.timer = QTimer(self)
-        self.timer.setInterval(33)
+        self.timer.setInterval(40)
         self.timer.timeout.connect(self.advance)
 
     def render_size(self):
@@ -1012,6 +1046,7 @@ class Malcip(QObject):
         self.globe = GlobePopup()
         self.field = CursorFieldPopup()
         self.scope = SignalScopePopup()
+        self.popup_order = []
         self.server = QLocalServer()
         SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
         QLocalServer.removeServer(str(SOCKET_PATH))
@@ -1082,18 +1117,11 @@ class Malcip(QObject):
         center_x = bounds.x() + bounds.width()//2
         margin = 20
         self.bar.move(center_x-self.bar.width()//2, bounds.y()+margin)
-        visible = [popup for popup in (self.fluid, self.system, self.globe,
-                                       self.field, self.scope) if popup.isVisible()]
+        visible = [popup for popup in self.popup_order if popup.isVisible()]
         column_right = bounds.right()-margin
         y = bounds.y()+margin
         column_width = 0
         for popup in visible:
-            # Give the two small instruments separate columns. On mixed-scale
-            # XWayland desktops KWin can clamp the final stacked window upward.
-            if popup is self.scope and self.field.isVisible():
-                column_right -= column_width+12
-                y = bounds.y()+margin
-                column_width = 0
             if y > bounds.y()+margin and y+popup.height() > bounds.bottom()-margin:
                 column_right -= column_width+12
                 y = bounds.y()+margin
@@ -1107,11 +1135,12 @@ class Malcip(QObject):
         if self.bar.isVisible():
             self.bar.hide()
         else:
-            self.bar.reveal()
+            self.bar.reveal(110)
             self.bar.activateWindow()
 
     def hide_all(self):
         self.bar.hide()
+        self.popup_order.clear()
         self.fluid.hide()
         self.system.hide()
         self.globe.hide()
@@ -1121,10 +1150,12 @@ class Malcip(QObject):
     def toggle_popup(self, popup):
         if popup.isVisible():
             popup.hide()
+            self.popup_order.remove(popup)
         else:
             bounds = self.screen().availableGeometry()
             popup.move(bounds.right()-popup.width()-20, bounds.y()+20)
             popup.reveal()
+            self.popup_order.append(popup)
         self.place()
         self.bar.update()
 
@@ -1154,23 +1185,38 @@ class Malcip(QObject):
     def on_connection(self):
         while self.server.hasPendingConnections():
             client = self.server.nextPendingConnection()
-            if client.waitForReadyRead(500):
-                command = bytes(client.readAll()).decode().strip()
-                if command == "toggle":
-                    self.toggle_bar()
-                elif command == "fluid":
-                    self.toggle_fluid()
-                elif command == "system":
-                    self.toggle_system()
-                elif command == "globe":
-                    self.toggle_globe()
-                elif command == "field":
-                    self.toggle_field()
-                elif command == "scope":
-                    self.toggle_scope()
-                elif command == "config":
-                    self.show_config()
-            client.disconnectFromServer()
+            client.command_buffer = bytearray()
+            client.command_handled = False
+            client.readyRead.connect(lambda c=client: self.read_command(c))
+            client.disconnected.connect(lambda c=client: self.read_command(c, final=True))
+            self.read_command(client)
+
+    def read_command(self, client, final=False):
+        if client.command_handled:
+            if final:
+                client.deleteLater()
+            return
+        client.command_buffer.extend(bytes(client.readAll()))
+        if b"\n" not in client.command_buffer and not final:
+            return
+        client.command_handled = True
+        command = bytes(client.command_buffer).decode(errors="replace").strip()
+        if command == "toggle":
+            self.toggle_bar()
+        elif command == "fluid":
+            self.toggle_fluid()
+        elif command == "system":
+            self.toggle_system()
+        elif command == "globe":
+            self.toggle_globe()
+        elif command == "field":
+            self.toggle_field()
+        elif command == "scope":
+            self.toggle_scope()
+        elif command == "config":
+            self.show_config()
+        if final:
+            client.deleteLater()
 
     def cleanup(self):
         self.server.close()
@@ -1199,7 +1245,7 @@ def main():
     if send_command(args.command):
         return 0
     owner = Malcip(app)
-    owner.bar.reveal()
+    owner.bar.reveal(110)
     owner.toggle_fluid()
     owner.bar.activateWindow()
     if args.command == "system":

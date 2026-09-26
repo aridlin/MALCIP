@@ -32,6 +32,7 @@ Then run:
 ```
 
 `install.sh` writes only to the current user's XDG data directory. To use another Python environment, set `MALCIP_PYTHON` to its interpreter. On a Wayland session with `DISPLAY` available, the launcher selects Qt's X11 backend so XWayland can position the popups and pass clicks through them.
+When MALCIP is already running, `run.sh` uses the lightweight `ctl.py` socket client; pressing the shortcut does not start a second Qt or NumPy process.
 
 ## Controls
 
@@ -62,6 +63,6 @@ The display-only popups use unmanaged, click-through tooltip windows. The keyboa
 
 ## Current scope
 
-This is an early MALCIP release. At 4,000 particles and 1.5× display scaling, a local 90-frame measurement found a 12.4 ms median and 19.9 ms 95th-percentile FLIP simulation plus rendering time while the pointer intersected the water. The globe renderer measured 8.9 ms median per frame at 336 × 336 physical pixels. Qt painting and compositor latency add to those times.
+This is an early MALCIP release. The FLIP surface uses a shared height histogram instead of one percentile calculation per column, and the globe caches projection geometry between frames. At 4,000 particles and 1.5× display scaling, a local 90-frame measurement found a 7.0 ms median for FLIP simulation plus rendering and 3.4 ms for globe rendering at 336 × 336 physical pixels. Qt painting, compositor latency, and other system load add to those times.
 
 MIT licensed. See [LICENSE](LICENSE). Natural Earth globe data is public domain; see [DATA_LICENSE.md](DATA_LICENSE.md).
